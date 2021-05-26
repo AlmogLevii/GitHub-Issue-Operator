@@ -1,0 +1,8 @@
+apiVersion: example.training.redhat.com/v1alpha1
+kind: GitHubIssue
+metadata:
+  name: sample1-edit
+spec:
+  repo: AlmogLevii/gitHubIssee-operator
+  title: issue1
+  description: test3
