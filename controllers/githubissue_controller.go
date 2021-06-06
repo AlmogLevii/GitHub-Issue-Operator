@@ -11,9 +11,18 @@ limitations under the License.
 */
 package controllers
 
+/*
+TODO:
+1.add issue name (name of operator) for printing using
+2. fix isExist checking that if the issue is close - open it (or maybe fix the update?)
+3.watch the guided videos
+4. unitesting:
+	4.1 create fake client
+	4.2 testing
+*/
+
 import (
 	"context"
-	"fmt"
 
 	examplev1alpha1 "github.com/AlmogLevii/example-operator/api/v1alpha1"
 	"github.com/go-logr/logr"
@@ -21,14 +30,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // GitHubIssueReconciler reconciles a GitHubIssue object
 type GitHubIssueReconciler struct {
 	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
+	Log          logr.Logger
+	Scheme       *runtime.Scheme
+	GitHubClient GitHubClient
 }
 type IssueData struct {
 	Title                string `json:"title"`
@@ -54,7 +63,6 @@ type OwnerDetails struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.7.2/pkg/reconcile
 func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	fmt.Print("\n")
 	log := r.Log.WithValues("githubissue", req.NamespacedName)
 
 	//connect to k8s and get the ghIssue from the server
@@ -71,63 +79,50 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	ownerDetails := OwnerDetails{Repo: ghIssue.Spec.Repo, Token: getToken()}
+	realClient := newRealGitHubClient(ghIssue.Spec.Repo)
+	r.GitHubClient = &realClient
 	k8sBasedIssue := IssueData{Title: ghIssue.Spec.Title, Description: ghIssue.Spec.Description}
 
-	issueExist, existingIssue := isExist(k8sBasedIssue, ownerDetails)
+	issueExist, existingIssue, ie := r.GitHubClient.IsExist(k8sBasedIssue)
 
-	//Name our finalizer
-	finalizer := "example.training.redhat.com/finalizer"
-
-	// examine DeletionTimestamp to determine if object is under deletion
-	if ghIssue.ObjectMeta.DeletionTimestamp.IsZero() {
-		// The object is not being deleted, so if it does not have our finalizer,
-		// then lets add the finalizer and update the object. This is equivalent
-		// registering our finalizer.
-		if !containsString(ghIssue.GetFinalizers(), finalizer) {
-			controllerutil.AddFinalizer(&ghIssue, finalizer)
-			if err := r.Update(ctx, &ghIssue); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	} else {
-		// The object is being deleted
-		if containsString(ghIssue.GetFinalizers(), finalizer) {
-			// our finalizer is present, so lets handle any external dependency
-			// if the issue isn't on github, skip the external handle and just remove finalizer
-			if issueExist {
-				if err := r.deleteExternalResources(existingIssue, ownerDetails); err != nil {
-					// if fail to delete the external dependency here, return with error
-					// so that it can be retried
-					return ctrl.Result{}, err
-				}
-			}
-			// remove our finalizer from the list and update it.
-			controllerutil.RemoveFinalizer(&ghIssue, finalizer)
-			if err := r.Update(ctx, &ghIssue); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		// Stop reconciliation as the item is being deleted
+	r.logMessage(*ie, log)
+	if !requestSucceeded(ie.Err) {
+		//log.Info(ie.Message)
+		//ntc - which err need to be returned
 		return ctrl.Result{}, nil
+	}
+
+	needToReturn, ie := r.GitHubClient.DeleteIfNeeded(ghIssue, r, issueExist, ctx, *existingIssue)
+
+	r.logMessage(*ie, log)
+	if needToReturn {
+		return ctrl.Result{}, ie.Err
 	}
 
 	var realWorldIssue *IssueData
-
 	if issueExist {
-		realWorldIssue = editExistingIssueIfNeeded(&k8sBasedIssue, existingIssue, ownerDetails)
+		realWorldIssue, ie = r.GitHubClient.EditIfNeeded(k8sBasedIssue, *existingIssue) //editExistingIssueIfNeeded(k8sBasedIssue, *existingIssue, ownerDetails)
 	} else {
-		realWorldIssue = createNewIssue(&k8sBasedIssue, ownerDetails)
+		realWorldIssue, ie = r.GitHubClient.Create(k8sBasedIssue) //createNewIssue(k8sBasedIssue, ownerDetails) //r.GitHubClient.create(k8sBasedIssue)
 	}
 
-	patch := client.MergeFrom(ghIssue.DeepCopy())
-	ghIssue.Status.State = realWorldIssue.State
-	ghIssue.Status.LastUpdatedTimeStamp = realWorldIssue.LastUpdatedTimeStamp
-	err = r.Client.Status().Patch(ctx, &ghIssue, patch)
-
-	if !requestSucceeded(err) {
+	r.logMessage(*ie, log)
+	if !requestSucceeded(ie.Err) {
+		//ntc - which err need to be returned
 		return ctrl.Result{}, nil
 	}
+
+	ie = r.UpdateStatus(ghIssue, *realWorldIssue, ctx)
+	r.logMessage(*ie, log)
+	if !requestSucceeded(ie.Err) {
+		//ntc - which err need to be returned
+		return ctrl.Result{}, nil
+	}
+
+	/* patch := client.MergeFrom(ghIssue.DeepCopy())
+	ghIssue.Status.State = realWorldIssue.State
+	ghIssue.Status.LastUpdatedTimeStamp = realWorldIssue.LastUpdatedTimeStamp
+	err = r.Client.Status().Patch(ctx, &ghIssue, patch) */
 
 	return ctrl.Result{}, nil
 }
@@ -137,4 +132,29 @@ func (r *GitHubIssueReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&examplev1alpha1.GitHubIssue{}).
 		Complete(r)
+}
+
+func (r *GitHubIssueReconciler) logMessage(ie InfoError, log logr.Logger) {
+
+	if !isEmpty(ie.Message) {
+		log.Info(ie.Message)
+	}
+}
+
+func isEmpty(s string) bool {
+	return s == ""
+}
+
+func (r *GitHubIssueReconciler) UpdateStatus(ghIssue examplev1alpha1.GitHubIssue, realWorldIssue IssueData, ctx context.Context) *InfoError {
+	patch := client.MergeFrom(ghIssue.DeepCopy())
+	ghIssue.Status.State = realWorldIssue.State
+	ghIssue.Status.LastUpdatedTimeStamp = realWorldIssue.LastUpdatedTimeStamp
+	err := r.Client.Status().Patch(ctx, &ghIssue, patch)
+
+	ie := InfoError{}
+	if !requestSucceeded(err) {
+		ie = newInfoError(nil, "Falied to update status")
+	}
+
+	return &ie
 }

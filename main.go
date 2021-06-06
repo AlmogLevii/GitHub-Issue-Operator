@@ -82,9 +82,10 @@ func main() {
 	}
 
 	if err = (&controllers.GitHubIssueReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("GitHubIssue"),
-		Scheme: mgr.GetScheme(),
+		Client:       mgr.GetClient(),
+		Log:          ctrl.Log.WithName("controllers").WithName("GitHubIssue"),
+		Scheme:       mgr.GetScheme(),
+		GitHubClient: &controllers.RealGitHubClient{},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitHubIssue")
 		os.Exit(1)

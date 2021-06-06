@@ -23,17 +23,17 @@ func requestSucceeded(err error) bool {
 	return err == nil
 }
 
-func isExist(k8sIssue IssueData, ownerDetails OwnerDetails) (bool, *IssueData) {
+func isExist(k8sBasedIssue IssueData, ownerDetails OwnerDetails) (bool, *IssueData) {
 	var issues []IssueData = getIssuesList(getApiUrl(ownerDetails.Repo))
 	for _, issue := range issues {
-		if issue.Title == k8sIssue.Title {
+		if issue.Title == k8sBasedIssue.Title {
 			return true, &issue
 		}
 	}
-	return false, &k8sIssue
+	return false, &k8sBasedIssue
 }
 
-func connectToRealWorld(method string, apiURL string, token string, issue *IssueData, statusCode int) *IssueData {
+func connectToRealWorld(method string, apiURL string, token string, issue IssueData, statusCode int) *IssueData {
 	//make it json
 	jsonData, _ := json.Marshal(&issue)
 	//creating client to set custom headers for Authorization
@@ -62,26 +62,26 @@ func connectToRealWorld(method string, apiURL string, token string, issue *Issue
 	return &realWorldIssue
 }
 
-func createNewIssue(k8sIssue *IssueData, ownerDetails OwnerDetails) *IssueData {
+func createNewIssue(k8sBasedIssue IssueData, ownerDetails OwnerDetails) *IssueData {
 	apiURL := getApiUrl(ownerDetails.Repo)
-	realWordIssue := connectToRealWorld("POST", apiURL, ownerDetails.Token, k8sIssue, http.StatusCreated)
-	fmt.Printf("Issue \"%s\" was upload successfully\n", k8sIssue.Title)
+	realWordIssue := connectToRealWorld("POST", apiURL, ownerDetails.Token, k8sBasedIssue, http.StatusCreated)
+	fmt.Printf("Issue \"%s\" was upload successfully\n", k8sBasedIssue.Title)
 	return realWordIssue
 }
 
-func editExistingIssueIfNeeded(k8sIssue *IssueData, existIssue *IssueData, ownerDetails OwnerDetails) *IssueData {
+func editExistingIssueIfNeeded(k8sBasedIssue IssueData, existIssue IssueData, ownerDetails OwnerDetails) *IssueData {
 	apiURL := getApiUrl(ownerDetails.Repo) + fmt.Sprintf("/%d", existIssue.Number)
-	needEdit := existIssue.Description != k8sIssue.Description
+	needEdit := existIssue.Description != k8sBasedIssue.Description
 	//if no edit was done  we need an update if the state is not the same
 	//needUpdate := needEdit || existIssue.State != k8sIssue.State
 
 	if needEdit {
-		existIssue.Description = k8sIssue.Description
+		existIssue.Description = k8sBasedIssue.Description
 		realWordIssue := connectToRealWorld("PATCH", apiURL, ownerDetails.Token, existIssue, http.StatusOK)
 		fmt.Printf("Issue \"%s\"was edit successfully", existIssue.Title)
 		return realWordIssue
 	} else {
-		return existIssue
+		return &existIssue
 	}
 }
 
@@ -116,7 +116,7 @@ func getIssuesList(apiURL string) []IssueData {
 }
 
 //Close read world github issue associated with the existIssue
-func (r *GitHubIssueReconciler) deleteExternalResources(existIssue *IssueData, ownerDetails OwnerDetails) error {
+func (r *GitHubIssueReconciler) deleteExternalResources(existIssue IssueData, ownerDetails OwnerDetails) error {
 	apiURL := getApiUrl(ownerDetails.Repo) + fmt.Sprintf("/%d", existIssue.Number)
 	existIssue.State = "closed"
 	connectToRealWorld("PATCH", apiURL, ownerDetails.Token, existIssue, http.StatusOK)
