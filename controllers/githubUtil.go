@@ -71,7 +71,7 @@ func createNewIssue(k8sBasedIssue IssueData, ownerDetails OwnerDetails) *IssueDa
 
 func editExistingIssueIfNeeded(k8sBasedIssue IssueData, existIssue IssueData, ownerDetails OwnerDetails) *IssueData {
 	apiURL := getApiUrl(ownerDetails.Repo) + fmt.Sprintf("/%d", existIssue.Number)
-	needEdit := existIssue.Description != k8sBasedIssue.Description
+	needEdit := existIssue.Description != k8sBasedIssue.Description && existIssue.State == "open"
 	//if no edit was done  we need an update if the state is not the same
 	//needUpdate := needEdit || existIssue.State != k8sIssue.State
 

@@ -41,38 +41,41 @@ func (rc *RealGitHubClient) Create(k8sBasedIssue IssueData) (*IssueData, *InfoEr
 	jsonData, _ := json.Marshal(&k8sBasedIssue)
 	var realWorldIssue IssueData
 
-	body, ie := rc.connect("POST", apiURL, jsonData, http.StatusCreated)
+	body, ie := rc.connect("POST", apiURL, jsonData, http.StatusCreated, k8sBasedIssue.Name)
 
 	if requestSucceeded(ie.Err) {
 		json.Unmarshal(body, &realWorldIssue)
-		fmt.Println("indecation1")
-		iep := newInfoError(nil, "Issue was post successfully")
+
+		iep := newInfoError(nil, fmt.Sprintf("%s - Issue was post successfully", k8sBasedIssue.Name))
 		ie = &iep
 	}
 
 	return &realWorldIssue, ie
 }
 
-func (rc *RealGitHubClient) EditIfNeeded(k8sBasedIssue IssueData, existIssue IssueData) (*IssueData, *InfoError) {
-	apiURL := getApiUrl(rc.repo) + fmt.Sprintf("/%d", existIssue.Number)
-	needEdit := existIssue.Description != k8sBasedIssue.Description || existIssue.State != k8sBasedIssue.State //ntc change the status
+func (rc *RealGitHubClient) EditIfNeeded(k8sBasedIssue IssueData, existingIssue IssueData) (*IssueData, *InfoError) {
+	apiURL := getApiUrl(rc.repo) + fmt.Sprintf("/%d", existingIssue.Number)
+	needEdit := existingIssue.Description != k8sBasedIssue.Description || existingIssue.State == "closed"
 
 	var realWorldIssue *IssueData
 	ie := &(InfoError{})
 
 	if needEdit {
-		existIssue.Description = k8sBasedIssue.Description
-		jsonData, _ := json.Marshal(&existIssue)
-		body, ie := rc.connect("PATCH", apiURL, jsonData, http.StatusOK)
+
+		existingIssue.Description = k8sBasedIssue.Description
+		existingIssue.State = "open"
+
+		jsonData, _ := json.Marshal(&existingIssue)
+		body, ie := rc.connect("PATCH", apiURL, jsonData, http.StatusOK, k8sBasedIssue.Name)
 
 		if requestSucceeded(ie.Err) {
 			json.Unmarshal(body, &realWorldIssue)
-			iep := newInfoError(nil, "Issue was edit successfully")
+			iep := newInfoError(nil, fmt.Sprintf("%s - Issue was edit successfully", k8sBasedIssue.Name))
 			ie = &iep
 		}
 
 	} else {
-		realWorldIssue = &existIssue
+		realWorldIssue = &existingIssue
 	}
 
 	return realWorldIssue, ie
@@ -83,7 +86,7 @@ func (rc *RealGitHubClient) IsExist(k8sBasedIssue IssueData) (bool, *IssueData, 
 	exist := false
 	existingIssue := &k8sBasedIssue
 
-	issues, ie := rc.getIssuesList(getApiUrl(rc.repo))
+	issues, ie := rc.getIssuesList(getApiUrl(rc.repo), k8sBasedIssue.Name)
 
 	if requestSucceeded(ie.Err) {
 
@@ -105,12 +108,12 @@ func (rc *RealGitHubClient) Close(existIssue IssueData) *InfoError {
 	existIssue.State = "closed"
 	jsonData, _ := json.Marshal(&existIssue)
 
-	_, ie := rc.connect("PATCH", apiURL, jsonData, http.StatusOK)
+	_, ie := rc.connect("PATCH", apiURL, jsonData, http.StatusOK, existIssue.Name)
 
 	return ie
 }
 
-func (rc *RealGitHubClient) getIssuesList(apiURL string) ([]IssueData, *InfoError) {
+func (rc *RealGitHubClient) getIssuesList(apiURL string, callerID string) ([]IssueData, *InfoError) {
 	query := "?state=all"
 	apiURL += query
 
@@ -126,15 +129,16 @@ func (rc *RealGitHubClient) getIssuesList(apiURL string) ([]IssueData, *InfoErro
 
 	var issues []IssueData
 
-	body, ie := rc.connect("GET", apiURL, jsonData, http.StatusOK)
+	body, ie := rc.connect("GET", apiURL, jsonData, http.StatusOK, callerID)
 
 	if requestSucceeded(ie.Err) {
 		json.Unmarshal(body, &issues)
 	}
+
 	return issues, ie
 }
 
-func (rc *RealGitHubClient) connect(method string, apiURL string, jsonData []byte, statusCode int) ([]byte, *InfoError) {
+func (rc *RealGitHubClient) connect(method string, apiURL string, jsonData []byte, desireStatusCode int, callerID string) ([]byte, *InfoError) {
 	client := rc.httpClient
 	req, _ := http.NewRequest(method, apiURL, bytes.NewReader(jsonData))
 	req.Header.Set("Authorization", "token "+rc.token)
@@ -143,13 +147,13 @@ func (rc *RealGitHubClient) connect(method string, apiURL string, jsonData []byt
 	var body []byte
 
 	if !requestSucceeded(err) {
-		ie = newInfoError(err, fmt.Sprintf("failed to connect with %s method", method))
+		ie = newInfoError(err, fmt.Sprintf("%s - failed to connect with %s method", callerID, method))
 	} else {
 
 		defer resp.Body.Close()
 
-		if resp.StatusCode != statusCode {
-			ie = newInfoError(err, "status code is differnet from the expected")
+		if resp.StatusCode != desireStatusCode {
+			ie = newInfoError(err, fmt.Sprintf("%s - Actual status code: %d. \t Expected: %d", callerID, resp.StatusCode, desireStatusCode))
 		} else {
 			body, _ = ioutil.ReadAll(resp.Body)
 		}
@@ -170,9 +174,8 @@ func (rc *RealGitHubClient) DeleteIfNeeded(ghIssue examplev1alpha1.GitHubIssue, 
 		if !containsString(ghIssue.GetFinalizers(), finalizer) {
 			controllerutil.AddFinalizer(&ghIssue, finalizer)
 			if err := r.Update(ctx, &ghIssue); err != nil {
-				ie = newInfoError(err, "failed to update the finalizer")
+				ie = newInfoError(err, fmt.Sprintf("%s - failed to update the finalizer", ghIssue.Name))
 				needToReturn = true
-				//return ctrl.Result{}, err
 			}
 		}
 	} else {
@@ -184,40 +187,23 @@ func (rc *RealGitHubClient) DeleteIfNeeded(ghIssue examplev1alpha1.GitHubIssue, 
 				if ierr := rc.Close(existingIssue); ierr.Err != nil {
 					// if fail to delete the external dependency here, return with error
 					// so that it can be retried
-					ie = newInfoError(ierr.Err, "failed to delete the external dependency")
+					ie = newInfoError(ierr.Err, fmt.Sprintf("%s - failed to delete the external dependency", ghIssue.Name))
 					needToReturn = true
-					//return ctrl.Result{}, err
 				}
 			}
 			if !needToReturn {
 				// remove our finalizer from the list and update it.
 				controllerutil.RemoveFinalizer(&ghIssue, finalizer)
 				if err := r.Update(ctx, &ghIssue); err != nil {
-					ie = newInfoError(err, "failed to update the list after removal our finalizer")
+					ie = newInfoError(err, fmt.Sprintf("%s - failed to update the list after removal our finalizer", ghIssue.Name))
 					needToReturn = true
-					//return ctrl.Result{}, err
 				}
 			}
 		}
 		// Stop reconciliation as the item is being deleted
 		needToReturn = true
-		ie = newInfoError(nil, "Issue was deleted successfully")
+		ie = newInfoError(nil, fmt.Sprintf("%s - Issue was deleted successfully", ghIssue.Name))
 	}
 
 	return needToReturn, &ie
 }
-
-/* func (rc *RealGitHubClient) UpdateStatus(ghIssue examplev1alpha1.GitHubIssue, realWorldIssue IssueData, ctx context.Context, r *GitHubIssueReconciler) *InfoError {
-
-	patch := client.MergeFrom(ghIssue.DeepCopy())
-	ghIssue.Status.State = realWorldIssue.State
-	ghIssue.Status.LastUpdatedTimeStamp = realWorldIssue.LastUpdatedTimeStamp
-	err := r.Client.Status().Patch(ctx, &ghIssue, patch)
-
-	ie := InfoError{}
-	if !requestSucceeded(err) {
-		ie = newInfoError(err, "Falied to update issue")
-	}
-
-	return &ie
-} */

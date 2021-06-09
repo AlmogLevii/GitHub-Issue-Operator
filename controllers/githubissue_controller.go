@@ -13,8 +13,8 @@ package controllers
 
 /*
 TODO:
-1.add issue name (name of operator) for printing using
-2. fix isExist checking that if the issue is close - open it (or maybe fix the update?)
+V 1.add issue name (name of operator) for printing usingV
+V 2. fix isExist checking that if the issue is close - open it (or maybe fix the update?)
 3.watch the guided videos
 4. unitesting:
 	4.1 create fake client
@@ -23,6 +23,7 @@ TODO:
 
 import (
 	"context"
+	"fmt"
 
 	examplev1alpha1 "github.com/AlmogLevii/example-operator/api/v1alpha1"
 	"github.com/go-logr/logr"
@@ -40,6 +41,7 @@ type GitHubIssueReconciler struct {
 	GitHubClient GitHubClient
 }
 type IssueData struct {
+	Name                 string
 	Title                string `json:"title"`
 	Description          string `json:"body"`
 	Number               int    `json:"number,omitempty"`
@@ -81,10 +83,10 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	realClient := newRealGitHubClient(ghIssue.Spec.Repo)
 	r.GitHubClient = &realClient
-	k8sBasedIssue := IssueData{Title: ghIssue.Spec.Title, Description: ghIssue.Spec.Description}
+	k8sBasedIssue := IssueData{Name: ghIssue.Name, Title: ghIssue.Spec.Title, Description: ghIssue.Spec.Description}
 
+	//find issue if exist
 	issueExist, existingIssue, ie := r.GitHubClient.IsExist(k8sBasedIssue)
-
 	r.logMessage(*ie, log)
 	if !requestSucceeded(ie.Err) {
 		//log.Info(ie.Message)
@@ -92,37 +94,33 @@ func (r *GitHubIssueReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
+	//delete issue if needed
 	needToReturn, ie := r.GitHubClient.DeleteIfNeeded(ghIssue, r, issueExist, ctx, *existingIssue)
-
 	r.logMessage(*ie, log)
 	if needToReturn {
 		return ctrl.Result{}, ie.Err
 	}
 
+	//create or edit if needed
 	var realWorldIssue *IssueData
 	if issueExist {
 		realWorldIssue, ie = r.GitHubClient.EditIfNeeded(k8sBasedIssue, *existingIssue) //editExistingIssueIfNeeded(k8sBasedIssue, *existingIssue, ownerDetails)
 	} else {
 		realWorldIssue, ie = r.GitHubClient.Create(k8sBasedIssue) //createNewIssue(k8sBasedIssue, ownerDetails) //r.GitHubClient.create(k8sBasedIssue)
 	}
-
 	r.logMessage(*ie, log)
 	if !requestSucceeded(ie.Err) {
 		//ntc - which err need to be returned
 		return ctrl.Result{}, nil
 	}
 
+	//update status
 	ie = r.UpdateStatus(ghIssue, *realWorldIssue, ctx)
 	r.logMessage(*ie, log)
 	if !requestSucceeded(ie.Err) {
 		//ntc - which err need to be returned
 		return ctrl.Result{}, nil
 	}
-
-	/* patch := client.MergeFrom(ghIssue.DeepCopy())
-	ghIssue.Status.State = realWorldIssue.State
-	ghIssue.Status.LastUpdatedTimeStamp = realWorldIssue.LastUpdatedTimeStamp
-	err = r.Client.Status().Patch(ctx, &ghIssue, patch) */
 
 	return ctrl.Result{}, nil
 }
@@ -153,7 +151,7 @@ func (r *GitHubIssueReconciler) UpdateStatus(ghIssue examplev1alpha1.GitHubIssue
 
 	ie := InfoError{}
 	if !requestSucceeded(err) {
-		ie = newInfoError(nil, "Falied to update status")
+		ie = newInfoError(nil, fmt.Sprintf("%s - Falied to update status", realWorldIssue.Name))
 	}
 
 	return &ie
